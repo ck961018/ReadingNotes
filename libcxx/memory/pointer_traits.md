@@ -58,3 +58,45 @@ struct __pointer_traits_difference_type<_Ptr, true> {
 若 _Ptr 没有 difference_type ，则将 type 定义为 ptrdiff_t ，64位系统上通常是 long int ；
 若 _Ptr 包含 difference_type , 则将 type 定义为 difference_type 。
 
+## 五.__has_rebind
+```
+template <class _Tp, class _Up>
+struct __has_rebind {
+private:
+  template <class _Xp>
+  static false_type __test(...);
+  _LIBCPP_SUPPRESS_DEPRECATED_PUSH
+  template <class _Xp>
+  static true_type __test(typename _Xp::template rebind<_Up>* = 0);
+  _LIBCPP_SUPPRESS_DEPRECATED_POP
+
+public:
+  static const bool value = decltype(__test<_Tp>(0))::value;
+};
+```
+依旧是 SFINAE ，当 _Tp 中不包含接受 _Up 作为参数的模板成员 rebind<_Up> 时，匹配返回值为 false_type 的 __test ；  
+否则匹配返回值为 true_type 的 __test 。  
+这里还用到了不求值表达式 decltype , 用于获取 __test 的返回值类型 ，同时避免编译时检查 __test 的实现。
+
+## 六.__pointer_traits_rebind
+```
+template <class _Tp, class _Up, bool = __has_rebind<_Tp, _Up>::value>
+struct __pointer_traits_rebind {
+  typedef _LIBCPP_NODEBUG typename _Tp::template rebind<_Up> type;
+#endif
+};
+
+template <template <class, class...> class _Sp, class _Tp, class... _Args, class _Up>
+struct __pointer_traits_rebind<_Sp<_Tp, _Args...>, _Up, true> {
+  typedef _LIBCPP_NODEBUG typename _Sp<_Tp, _Args...>::template rebind<_Up> type;
+#endif
+};
+
+template <template <class, class...> class _Sp, class _Tp, class... _Args, class _Up>
+struct __pointer_traits_rebind<_Sp<_Tp, _Args...>, _Up, false> {
+  typedef _Sp<_Up, _Args...> type;
+};
+```
+如果 _Tp / _SP 中包含接受 _Up 作为参数的模板成员 rebind<_Up> ，将 type 定义为 rebind<_Up> ；
+如果 _Sp 中不包含 rebind<_Up> ，但 _Sp 本身是接受 _Up 作为模板参数的容器，那么将 type 定义为 _Sp<_Up, _Args...> type 。
+否则没有模板匹配。
