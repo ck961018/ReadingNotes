@@ -97,6 +97,154 @@ struct __pointer_traits_rebind<_Sp<_Tp, _Args...>, _Up, false> {
   typedef _Sp<_Up, _Args...> type;
 };
 ```
-如果 _Tp / _SP 中包含接受 _Up 作为参数的模板成员 rebind<_Up> ，将 type 定义为 rebind<_Up> ；
-如果 _Sp 中不包含 rebind<_Up> ，但 _Sp 本身是接受 _Up 作为模板参数的容器，那么将 type 定义为 _Sp<_Up, _Args...> type 。
+如果 _Tp / _SP 中包含接受 _Up 作为参数的模板成员 rebind<_Up> ，将 type 定义为 rebind<_Up> ；  
+如果 _Sp 中不包含 rebind<_Up> ，但 _Sp 本身是接受 _Up 作为模板参数的容器，那么将 type 定义为 _Sp<_Up, _Args...> type ；  
 否则没有模板匹配。
+
+## 七.__pointer_traits_impl`
+```
+template <class _Ptr, class = void>
+struct __pointer_traits_impl {};
+
+template <class _Ptr>
+struct __pointer_traits_impl<_Ptr, __void_t<typename __pointer_traits_element_type<_Ptr>::type> > {
+  typedef _Ptr pointer;
+  typedef typename __pointer_traits_element_type<pointer>::type element_type;
+  typedef typename __pointer_traits_difference_type<pointer>::type difference_type;
+
+  template <class _Up>
+  using rebind = typename __pointer_traits_rebind<pointer, _Up>::type;
+
+private:
+  struct __nat {};
+
+public:
+  _LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR_SINCE_CXX20 static pointer
+  pointer_to(__conditional_t<is_void<element_type>::value, __nat, element_type>& __r) {
+    return pointer::pointer_to(__r);
+  }
+};
+```
+pointer_traits 非指针版本的实现。  
+利用前面几个萃取工具获取 _Ptr 类型的 element_type, difference_type 和 rebind 成员。  
+pointer_to 成员函数用于获取指向引用对象的指针。
+
+## 八.pointer_traits
+```
+template <class _Ptr>
+struct _LIBCPP_TEMPLATE_VIS pointer_traits : __pointer_traits_impl<_Ptr> {};
+
+template <class _Tp>
+struct _LIBCPP_TEMPLATE_VIS pointer_traits<_Tp*> {
+  typedef _Tp* pointer;
+  typedef _Tp element_type;
+  typedef ptrdiff_t difference_type;
+
+  template <class _Up>
+  using rebind = _Up*;
+#endif
+
+private:
+  struct __nat {};
+
+public:
+  _LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR_SINCE_CXX20 static pointer
+  pointer_to(__conditional_t<is_void<element_type>::value, __nat, element_type>& __r) _NOEXCEPT {
+    return std::addressof(__r);
+  }
+};
+
+template <class _From, class _To>
+using __rebind_pointer_t = typename pointer_traits<_From>::template rebind<_To>;
+```
+当 _Ptr 非指针时，直接采用 __pointer_traits_impl 的实现；  
+当 _Ptr 为指针时，特化 element_type, difference_type 和 rebind 。  
+此外，指针版本的 pointer_to 成员函数将直接调用 std::addressof 库函数。
+
+__rebind_pointer_t 是直接获取 rebind 成员的语法糖。
+
+## 九._IsFancyPointer
+```
+template <class _Pointer, class = void>
+struct _HasToAddress : false_type {};
+
+template <class _Pointer>
+struct _HasToAddress<_Pointer, decltype((void)pointer_traits<_Pointer>::to_address(std::declval<const _Pointer&>())) >
+    : true_type {};
+
+template <class _Pointer, class = void>
+struct _HasArrow : false_type {};
+
+template <class _Pointer>
+struct _HasArrow<_Pointer, decltype((void)std::declval<const _Pointer&>().operator->()) > : true_type {};
+
+template <class _Pointer>
+struct _IsFancyPointer {
+  static const bool value = _HasArrow<_Pointer>::value || _HasToAddress<_Pointer>::value;
+};
+```
+这几个模板结构体联系比较紧密，因此放在一起讲解。  
+
+_HasToAddress 与 _HasArrow 都很好理解，分别用来检测 _Pointer 是否包含 to_address 成员函数和重载的 operator-> 成员函数。  
+其中 std::declval 在不求值表达式中获取类型对应的对象，避免 _Pointer 类型不包含无参构造函数。  
+
+_IsFancyPointer 通过检查 _HasToAddress 和 _HasArrow 来确定一个类型是否为 Fancy 指针类型。 
+
+## 十.__to_address
+```
+template <class _Pointer, class = void>
+struct __to_address_helper;
+
+template <class _Tp>
+_LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR _Tp* __to_address(_Tp* __p) _NOEXCEPT {
+  static_assert(!is_function<_Tp>::value, "_Tp is a function type");
+  return __p;
+}
+
+template <class _Pointer, __enable_if_t< _And<is_class<_Pointer>, _IsFancyPointer<_Pointer> >::value, int> = 0>
+_LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR
+    __decay_t<decltype(__to_address_helper<_Pointer>::__call(std::declval<const _Pointer&>()))>
+    __to_address(const _Pointer& __p) _NOEXCEPT {
+  return __to_address_helper<_Pointer>::__call(__p);
+}
+
+template <class _Pointer, class>
+struct __to_address_helper {
+  _LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR static decltype(std::__to_address(
+      std::declval<const _Pointer&>().operator->()))
+  __call(const _Pointer& __p) _NOEXCEPT {
+    return std::__to_address(__p.operator->());
+  }
+};
+
+template <class _Pointer>
+struct __to_address_helper<_Pointer,
+                           decltype((void)pointer_traits<_Pointer>::to_address(std::declval<const _Pointer&>()))> {
+  _LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR static decltype(pointer_traits<_Pointer>::to_address(
+      std::declval<const _Pointer&>()))
+  __call(const _Pointer& __p) _NOEXCEPT {
+    return pointer_traits<_Pointer>::to_address(__p);
+  }
+};
+
+```
+如果 __p 为指针， __to_address 直接返回 __p；  
+如果 __p 是 Fancy 指针类型，则调用 __to_address_helper 的 __call 函数来获取指向的地址；  
+否则没有模板匹配。
+
+__to_address_helper 会判断 _Pointer 包含 to_address 成员函数还是 operator-> 重载成员函数，在 __call 中分别调用对应的函数。 
+
+## 十一.to_address
+```
+template <class _Tp>
+inline _LIBCPP_HIDE_FROM_ABI constexpr auto to_address(_Tp* __p) noexcept {
+  return std::__to_address(__p);
+}
+
+template <class _Pointer>
+inline _LIBCPP_HIDE_FROM_ABI constexpr auto to_address(const _Pointer& __p) noexcept
+    -> decltype(std::__to_address(__p)) {
+  return std::__to_address(__p);
+}
+```
+综合以上的实现，获取 __p 指针或对象指向的地址。
