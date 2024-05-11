@@ -186,7 +186,7 @@ struct _IsFancyPointer {
 这几个模板结构体联系比较紧密，因此放在一起讲解。  
 
 _HasToAddress 与 _HasArrow 都很好理解，分别用来检测 _Pointer 是否包含 to_address 成员函数和重载的 operator-> 成员函数。  
-其中 std::declval 在不求值表达式中获取类型对应的对象，避免 _Pointer 类型不包含无参构造函数。  
+其中 std::declval 在不求值表达式中获取类型对应的对象，以防 _Pointer 类型不包含无参构造函数。  
 
 _IsFancyPointer 通过检查 _HasToAddress 和 _HasArrow 来确定一个类型是否为 Fancy 指针类型。 
 
