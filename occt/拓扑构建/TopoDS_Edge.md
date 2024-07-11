@@ -6,10 +6,10 @@ BRep_TEdge是实际保存拓扑边数据的结构，它包含三个成员变量�
 
 * Standard_Real myTolerance // 容差
 * Standard_Integer myFlags // 标志位
-* BRep_ListOfCurveRepresentation myCurves // 曲线链表  
+* BRep_ListOfCurveRepresentation myCurves // 曲线表示列表  
 
 标志位在不同的二进制位分别表示曲线范围是否一致、参数表达是否一致和是否退化；  
-曲线链表中保存着BRep_CurveRepresentation类型，它派生了Curve3D、CurveOnSurface、Polygon3D等几何曲线类型。
+曲线表示列表中保存着BRep_CurveRepresentation类型，它派生了Curve3D、CurveOnSurface、Polygon3D等几何曲线类型。
 
 ## 二、BRepLib_MakeEdge
 
@@ -441,8 +441,9 @@ void BRepLib_MakeEdge::Init(const Handle(Geom2d_Curve)& CC,
 2. 不检查闭合曲线退化；
 3. 需要更新方向(orientation)。
 
-不检查参数距离是因为二维到三维的映射可能会让参数空间上不合法的点在三维空间中合法。
+不检查参数距离是因为二维到三维的映射可能会让参数空间上不合法的点在三维空间中合法。  
 
+> [!NOTE]
 > 第一个Init函数中调用的MakeEdge重载中进行了UpdateEdge，因此不需要再次调用
 
 ## 三、BRep_Builder
@@ -568,4 +569,194 @@ static void UpdateCurves (BRep_ListOfCurveRepresentation& lcr,
     }
     lcr.Append(C3d);
   }
+```
+
+#### 更新二维曲线和三维曲面
+
+```cpp
+void BRep_Builder::UpdateEdge (const TopoDS_Edge& E,
+                               const Handle(Geom2d_Curve)& C,
+                               const Handle(Geom_Surface)& S,
+                               const TopLoc_Location& L,
+                               const Standard_Real Tol)
+```
+
+函数体内其它部分都与上一个函数一样，只是调用了UpdateCurves的不同重载：
+
+```cpp
+static void UpdateCurves (BRep_ListOfCurveRepresentation& lcr,
+                          const Handle(Geom2d_Curve)& C,
+                          const Handle(Geom_Surface)& S,
+                          const TopLoc_Location& L)
+```
+
+一开始还是先初始化，这里给f和l赋值负无穷和正无穷是为了后面判断f和l是否更新过：
+
+```cpp
+{
+  BRep_ListIteratorOfListOfCurveRepresentation itcr(lcr);
+  Handle(BRep_CurveRepresentation) cr;
+  Handle(BRep_GCurve) GC;
+  Standard_Real f = -Precision::Infinite(), l = Precision::Infinite();
+```
+
+遍历曲线表示列表，如果当前为三维曲线，则获取其范围；如果是当前曲面上的曲线，则删除该曲线：
+
+```cpp
+  while (itcr.More()) {
+    GC = Handle(BRep_GCurve)::DownCast(itcr.Value());
+    if (!GC.IsNull()) {
+      if (GC->IsCurve3D()) {
+
+        // xpu151298 : parameters can be set for null curves
+        //             see lbo & flo, to determine whether range is defined
+        //             compare first and last parameters with default values.
+        GC->Range(f, l);
+      }
+      if (GC->IsCurveOnSurface(S,L)) {
+        // remove existing curve on surface
+        // cr is used to keep a reference on the curve representation
+        // this avoid deleting it as its content may be referenced by C or S
+        cr = itcr.Value();
+        lcr.Remove(itcr);
+      }
+      else {
+        itcr.Next();
+      }
+    }
+    else {
+      itcr.Next();
+    }
+  }
+```
+
+若传入二维曲线非空，则创建新的曲线表示。判断f和l是否被三维曲线更新过，优先采用更新过的值设置范围：
+
+```cpp
+  if (!C.IsNull()) {
+    Handle(BRep_CurveOnSurface) COS = new BRep_CurveOnSurface(C, S, L);
+    Standard_Real aFCur = 0.0, aLCur = 0.0;
+    COS->Range(aFCur, aLCur);
+    if (!Precision::IsInfinite(f))
+    {
+      aFCur = f;
+    }
+
+    if (!Precision::IsInfinite(l))
+    {
+      aLCur = l;
+    }
+
+    COS->SetRange(aFCur, aLCur);
+    lcr.Append(COS);
+  }
+}
+```
+
+> [!NOTE]
+> ``cr = itcr.Value()`` 这句代码在源码中的注释说是为了保留曲线的引用，但个人认为是没有必要的
+
+#### 更新二维曲线、三维曲面及首尾点
+
+```cpp
+void BRep_Builder::UpdateEdge (const TopoDS_Edge& E,
+                               const Handle(Geom2d_Curve)& C,
+                               const Handle(Geom_Surface)& S,
+                               const TopLoc_Location& L,
+                               const Standard_Real Tol,
+                               const gp_Pnt2d& Pf,
+                               const gp_Pnt2d& Pl)
+```
+
+这个重载没什么好说的，跟上一个函数的不同也仅是调用了UpdateCurves的不同重载：
+
+```cpp
+static void UpdateCurves (BRep_ListOfCurveRepresentation& lcr,
+                          const Handle(Geom2d_Curve)& C,
+                          const Handle(Geom_Surface)& S,
+                          const TopLoc_Location& L,
+                          const gp_Pnt2d& Pf,
+                          const gp_Pnt2d& Pl)
+```
+
+UpdateCurves和上一个也基本一致，不过在创建新的曲线表示时新增了一句更新UV点函数的调用：
+
+```cpp
+  if (! C.IsNull()) {
+    Handle(BRep_CurveOnSurface) COS = new BRep_CurveOnSurface(C,S,L);
+    Standard_Real aFCur = 0.0, aLCur = 0.0;
+    COS->Range(aFCur, aLCur);
+    if (!Precision::IsInfinite(f))
+    {
+      aFCur = f;
+    }
+
+    if (!Precision::IsInfinite(l))
+    {
+      aLCur = l;
+    }
+
+    COS->SetRange(aFCur, aLCur);
+    COS->SetUVPoints(Pf, Pl); // 更新UV点
+    lcr.Append(COS);
+  }
+```
+
+#### 更新两条二维曲线和三维曲面
+
+```cpp
+void BRep_Builder::UpdateEdge (const TopoDS_Edge& E,
+                               const Handle(Geom2d_Curve)& C1,
+                               const Handle(Geom2d_Curve)& C2,
+                               const Handle(Geom_Surface)& S,
+                               const TopLoc_Location& L,
+                               const Standard_Real Tol)
+```
+
+通常用于定义闭合曲面上跨闭合位置的曲线，只有曲线表示的创建与之前的重载不同，这里不再赘述。
+
+#### 更新两条二维曲线、三维曲面及首尾点
+
+略
+
+#### 更新三维多边形
+
+```cpp
+void BRep_Builder::UpdateEdge (const TopoDS_Edge& E,
+                               const Handle(Poly_Polygon3D)& P,
+                               const TopLoc_Location& L)
+```
+
+思路和之前一致，遍历曲线表示列表，找到三维多边形并更新，没有找到就创建一个新的：
+
+```cpp
+{
+  const Handle(BRep_TEdge)& TE = *((Handle(BRep_TEdge)*) &E.TShape());
+  if(TE->Locked())
+  {
+    throw TopoDS_LockedShape("BRep_Builder::UpdateEdge");
+  }
+  BRep_ListOfCurveRepresentation& lcr = TE->ChangeCurves();
+  BRep_ListIteratorOfListOfCurveRepresentation itcr(lcr);
+
+  while (itcr.More())
+  {
+    if (itcr.Value()->IsPolygon3D())
+    {
+      if (P.IsNull())
+        lcr.Remove(itcr);
+      else
+        itcr.Value()->Polygon3D(P);
+      TE->Modified(Standard_True);
+      return;
+    }
+    itcr.Next();
+  }
+
+  const TopLoc_Location l = L.Predivided(E.Location());
+  Handle(BRep_Polygon3D) P3d = new BRep_Polygon3D(P,l);
+  lcr.Append(P3d);
+
+  TE->Modified(Standard_True);
+}
 ```
